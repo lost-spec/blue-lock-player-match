@@ -194,7 +194,7 @@
       reason_to_play: "2",
       how_would_you_win: "1",
       what_excites_you: "2",
-      suitability: "2",
+      suitability: "1",
       what_do_you_rely_on: "2",
       chaos_or_not: "1",
       selfishness_or_not: "2",
