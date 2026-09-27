@@ -23,6 +23,26 @@
  * 3. Redeploy. Environment variables only apply to a fresh deployment, so an
  *    old deploy will keep failing until you redeploy.
  *
+ *  WEB RESEARCH (OPTIONAL, ON BY DEFAULT)
+ *  -------------------------------------
+ *  Scout answers by looking things up on the web instead of trusting the
+ *  hard-coded roster or the model's memory. These let you tune or disable it
+ *  from the Vercel dashboard, with no code change:
+ *
+ *      SCOUT_WEB_SEARCH=off            turn research off entirely
+ *      SCOUT_SEARCH_ENGINE=parallel    auto | parallel | exa | perplexity
+ *                                      | native | firecrawl
+ *      SCOUT_SEARCH_MODE=turbo         engine mode (parallel/exa only)
+ *      SCOUT_SEARCH_MAX_USES=2         searches allowed per reply
+ *      SCOUT_SEARCH_MAX_RESULTS=4      results per search
+ *      SCOUT_SEARCH_MAX_TOTAL_RESULTS=8   results per reply overall
+ *      SCOUT_RATE_LIMIT_PER_MIN=8      messages per minute per visitor
+ *
+ *  Search is billed per search, so the caps matter. The cheapest sane setting
+ *  is the parallel engine in turbo mode at about $0.001 per search; Exa costs
+ *  roughly $0.007. If the model or engine refuses the tool, the proxy retries
+ *  once without it, so enabling research can never leave the chat broken.
+ *
  * LOCAL TESTING
  * -------------
  * `vercel dev` runs the function locally and loads your .env.local, or set
@@ -59,9 +79,68 @@ const MAX_TOTAL_CHARS = 40000;
 // roughly half of all replies coming back empty. Keep generous headroom.
 const MAX_TOKENS = 4000;
 
+/* ------------------------------------------------------------------
+ *  WEB RESEARCH
+ * ------------------------------------------------------------------
+ *  Scout does its own research by giving the model OpenRouter's
+ *  `openrouter:web_search` server tool. The model decides for itself
+ *  whether a question needs looking up and what to search for, which is
+ *  what "the bot researches it itself" actually requires. (The older
+ *  `plugins: [{ id: "web" }]` and the `:online` model suffix are both
+ *  deprecated by OpenRouter and always searched once per request, so
+ *  they are deliberately not used here.)
+ *
+ *  SEARCH IS NOT FREE. It is billed per search on top of token costs, so
+ *  every knob below is a cost control:
+ *    - maxUses   hard cap on searches per reply  (engine charges per search)
+ *    - maxResults / maxTotalResults  cap the context that comes back
+ *    - maxToolCalls  bounds the whole tool loop
+ *  Defaults are deliberately stingy. Turn it off with SCOUT_WEB_SEARCH=off.
+ */
+const SEARCH_ON = (process.env.SCOUT_WEB_SEARCH || "on").toLowerCase() !== "off";
+
+const num = (value, fallback, min, max) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const SEARCH_ENGINE = process.env.SCOUT_SEARCH_ENGINE || "parallel";
+const SEARCH_MODE = process.env.SCOUT_SEARCH_MODE || "turbo";
+const SEARCH_MAX_USES = num(process.env.SCOUT_SEARCH_MAX_USES, 2, 1, 5);
+const SEARCH_MAX_RESULTS = num(process.env.SCOUT_SEARCH_MAX_RESULTS, 4, 1, 10);
+const SEARCH_MAX_TOTAL_RESULTS = num(process.env.SCOUT_SEARCH_MAX_TOTAL_RESULTS, 8, 1, 25);
+// Whole-request tool budget. Kept tight so a confused model cannot loop.
+const MAX_TOOL_CALLS = SEARCH_MAX_USES + 1;
+
+function searchTools() {
+  if (!SEARCH_ON) return null;
+  return [
+    {
+      type: "openrouter:web_search",
+      parameters: {
+        engine: SEARCH_ENGINE,
+        ...(SEARCH_ENGINE === "parallel" || SEARCH_ENGINE === "exa"
+          ? { mode: SEARCH_MODE }
+          : {}),
+        max_results: SEARCH_MAX_RESULTS,
+        max_total_results: SEARCH_MAX_TOTAL_RESULTS,
+        max_uses: SEARCH_MAX_USES,
+      },
+    },
+  ];
+}
+
 // Per-instance rate limit. See the note above: this is best-effort only.
+// When research is on, every message can spend real credits on searches, so
+// the ceiling drops to keep one visitor from draining the account.
 const WINDOW_MS = 60 * 1000;
-const MAX_REQUESTS_PER_WINDOW = 20;
+const MAX_REQUESTS_PER_WINDOW = num(
+  process.env.SCOUT_RATE_LIMIT_PER_MIN,
+  SEARCH_ON ? 8 : 20,
+  1,
+  120,
+);
 const hits = new Map();
 
 function clientIp(req) {
@@ -162,11 +241,14 @@ export default async function handler(req, res) {
 
   const controller = new AbortController();
   // Reasoning models are slow. Measured 4-21s per reply, so allow a wide
-  // margin rather than cutting answers off mid-thought.
+  // margin rather than cutting answers off mid-thought. A turn that includes
+  // web research is slower still, since each search adds a round trip.
   const timeout = setTimeout(() => controller.abort(), 55000);
 
-  try {
-    const upstream = await fetch(OPENROUTER_URL, {
+  const tools = searchTools();
+
+  async function callUpstream(withTools) {
+    return fetch(OPENROUTER_URL, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -174,14 +256,29 @@ export default async function handler(req, res) {
         Authorization: `Bearer ${apiKey}`,
         "HTTP-Referer": process.env.APP_URL || "https://blue-lock-player-match.vercel.app",
         "X-Title": "Blue Lock Player Match",
+        // OpenRouter asks server-side callers to identify themselves.
+        "User-Agent": "blue-lock-player-match/1.0",
       },
       body: JSON.stringify({
         model: model(),
         messages,
         temperature: 0.7,
         max_tokens: MAX_TOKENS,
+        ...(withTools ? { tools, max_tool_calls: MAX_TOOL_CALLS } : {}),
       }),
     });
+  }
+
+  try {
+    let upstream = await callUpstream(Boolean(tools));
+
+    // If the model or the chosen search engine rejects the tool, fall back to
+    // a plain chat call rather than leaving the visitor with a dead chatbot.
+    if (!upstream.ok && tools && isToolRejection(upstream.status)) {
+      const detail = (await upstream.text()).slice(0, 300);
+      console.warn("Web search unavailable, retrying without it.", upstream.status, detail);
+      upstream = await callUpstream(false);
+    }
 
     const text = await upstream.text();
 
@@ -191,12 +288,12 @@ export default async function handler(req, res) {
       console.error("OpenRouter error", upstream.status, text.slice(0, 300));
 
       if (upstream.status === 429) {
-        const daily = /free-models-per-day|per-day|daily/i.test(text);
+        const daily = /free-models-per-day|per-day|daily|credits/i.test(text);
         return fail(
           res,
           429,
           daily
-            ? "The free AI model's daily limit has been reached. Try again tomorrow, or add credits to your OpenRouter account."
+            ? "The AI model's daily limit or credit balance has run out. Try again later, or top up the OpenRouter account."
             : "Too many requests to the AI provider. Please wait a moment and try again.",
         );
       }
@@ -213,6 +310,12 @@ export default async function handler(req, res) {
       return fail(res, 502, "The AI provider returned an unreadable response.");
     }
 
+    // Surface research activity in the Vercel logs so the cost is visible.
+    const searches = payload?.usage?.server_tool_use?.web_search_requests;
+    if (searches) {
+      console.log(`Scout used ${searches} web search${searches === 1 ? "" : "es"} for this reply.`);
+    }
+
     return res.status(200).json(payload);
   } catch (error) {
     if (error.name === "AbortError") {
@@ -223,6 +326,19 @@ export default async function handler(req, res) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * 4xx that means "this request could not be served, but a plain chat call
+ * still might be". Retrying without the tool keeps Scout answering even when
+ * search is unavailable, unaffordable, or unsupported by the chosen model.
+ *
+ * Deliberately excluded:
+ *   401 / 403 - the key itself is bad, so nothing will work
+ *   429       - rate limited; retrying immediately would just burn quota
+ */
+function isToolRejection(status) {
+  return status === 400 || status === 402 || status === 404 || status === 422;
 }
 
 function safeParse(value) {

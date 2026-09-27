@@ -411,7 +411,7 @@
       eyebrow: "Final question",
       title: "Is selfishness a weakness in football?",
       description: "Give the answer that best reflects your philosophy.",
-      playerField: "chaos_or_not",
+      playerField: "selfishness_or_not",
       weight: 1,
       validAnswers: ["1", "2"],
       options: [
@@ -422,7 +422,7 @@
   ];
 
   const QUESTION_BY_SLUG = new Map(QUESTIONS.map((question) => [question.slug, question]));
-  const TOTAL_SCORE = 16;
+  const TOTAL_SCORE = QUESTIONS.reduce((total, question) => total + question.weight, 0);
   const app = document.getElementById("app");
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let state = loadState();
@@ -752,7 +752,7 @@
   function rankedPlayers() {
     return rankedAllPlayers()
       .slice(0, 3)
-      .map((player, index) => ({ ...player, rank: index + 1 }));
+      .map((player, index) => ({ ...player, slot: index + 1, rank: player.matchRank }));
   }
 
   function renderResults() {
@@ -763,9 +763,9 @@
     const resultCards = results
       .map(
         (player) => {
-          const rankWord = rankWords[player.rank] || String(player.rank);
+          const rankWord = rankWords[player.slot] || String(player.slot);
           return `
-          <article class="result-card rank-${rankWord} ${player.rank === 1 ? "result-card-featured" : ""}" style="--reveal-delay: ${player.rank === 1 ? 0 : player.rank === 2 ? 220 : 360}ms">
+          <article class="result-card rank-${rankWord} ${player.slot === 1 ? "result-card-featured" : ""}" style="--reveal-delay: ${player.slot === 1 ? 0 : player.slot === 2 ? 220 : 360}ms">
             <div class="result-media" tabindex="0" aria-label="${escapeHtml(toTitleCase(player.name))} image. Hover or focus to view the alternate image.">
               <img
                 class="player-image player-image-primary"
@@ -773,7 +773,7 @@
                 alt="${escapeHtml(toTitleCase(player.name))} player portrait"
                 width="600"
                 height="750"
-                loading="${player.rank === 1 ? "eager" : "lazy"}"
+                loading="${player.slot === 1 ? "eager" : "lazy"}"
                 decoding="async"
               >
               <img
@@ -788,7 +788,7 @@
               >
               <span class="rank-badge">${player.rank}</span>
               <span class="alternate-image-hint" aria-hidden="true">Alt view</span>
-              <span class="match-label">${player.rank === 1 ? "Best match" : "Top match"}</span>
+              <span class="match-label">${player.slot === 1 ? "Best match" : "Top match"}</span>
               <span class="result-sheen" aria-hidden="true"></span>
             </div>
             <div class="result-body">
@@ -816,7 +816,7 @@
     const squadRows = squad
       .map(
         (player) => `
-          <li class="squad-row ${player.rank <= 3 ? "squad-row-top" : ""}" style="--reveal-delay: ${Math.min(player.rank, 10) * 45}ms">
+          <li class="squad-row ${player.matchRank <= 3 ? "squad-row-top" : ""}" style="--reveal-delay: ${Math.min(player.matchRank, 10) * 45}ms">
             <span class="squad-rank">${player.matchRank}</span>
             <span class="squad-media" tabindex="0" aria-label="${escapeHtml(toTitleCase(player.name))} image. Hover or focus to view the alternate image.">
               <img
