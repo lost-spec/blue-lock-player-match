@@ -28,7 +28,10 @@
         </span>
         <span>Player Match</span>
       </a>
-      <span class="d-none d-sm-inline badge rounded-pill text-bg-light border fw-medium">8-question quiz</span>
+      <div class="d-flex align-items-center gap-2 ms-auto">
+        <span class="d-none d-sm-inline badge rounded-pill text-bg-light border fw-medium">8-question quiz</span>
+        <a class="navbar-stats-link" data-nav-stats href="#/stats" hidden>Analytics</a>
+      </div>
     </div>
   </nav>
 
@@ -106,6 +109,7 @@
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+  <script src="./static/stats.js" defer></script>
   <script src="./static/site.js" defer></script>
   <script src="./static/chatbot.js" defer></script>
 </body>

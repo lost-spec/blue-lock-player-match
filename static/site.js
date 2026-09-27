@@ -899,27 +899,28 @@
 
           <div class="surface-card retake-panel p-4 p-md-5">
             <p class="retake-copy">Ready to see a different player profile?</p>
-            <button class="btn btn-primary btn-lg retake-cta" type="button" data-action="retake">
-              <span>Take Quiz Again</span>
-              <span class="retake-cta-arrow" aria-hidden="true">&rarr;</span>
-            </button>
+            <div class="retake-actions">
+              <button class="btn btn-ghost btn-lg retake-cta retake-cta-secondary" type="button" data-action="stats">
+                <span>Match Analytics</span>
+                <span class="retake-cta-arrow" aria-hidden="true">&rarr;</span>
+              </button>
+              <button class="btn btn-primary btn-lg retake-cta" type="button" data-action="retake">
+                <span>Take Quiz Again</span>
+                <span class="retake-cta-arrow" aria-hidden="true">&rarr;</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
     `;
 
-    window.__scoutLastResult = squad.slice(0, 3).map((player) => ({
-      name: toTitleCase(player.name),
-      points: formatScore(player.score),
-      percentage: formatPercentage(player.percentage),
-    }));
+    syncScoutResult();
 
     window.requestAnimationFrame(() => {
       app.querySelector(".question-title")?.focus();
       renderChart(squad);
     });
   }
-
   function squadBarColor(rank, boost = 1) {
     const palette = [
       [34, 211, 238],
@@ -1089,12 +1090,67 @@
     }
   }
 
+  function syncNavStatsLink() {
+    const link = document.querySelector("[data-nav-stats]");
+    if (link) {
+      link.hidden = state.answers.length !== QUESTIONS.length;
+    }
+  }
+
+  function syncScoutResult() {
+    window.__scoutLastResult = rankedAllPlayers()
+      .slice(0, 3)
+      .map((player) => ({
+        name: toTitleCase(player.name),
+        points: formatScore(player.score),
+        percentage: formatPercentage(player.percentage),
+      }));
+  }
+
+  function renderStats() {
+    document.title = "Match Analytics | Player Match";
+    if (!window.PlayerMatchStats) {
+      navigate("results", true);
+      return;
+    }
+
+    window.PlayerMatchStats.start({
+      container: app,
+      players: PLAYERS,
+      questions: QUESTIONS,
+      totalScore: TOTAL_SCORE,
+      imageBase: IMAGE_BASE,
+      answers: state.answers,
+      reduceMotion,
+      onSave: (answers) => {
+        state.answers = answers;
+        saveState();
+        syncScoutResult();
+      },
+    });
+  }
+
   function render() {
     if (!app) {
       return;
     }
 
     const route = routeFromLocation();
+    syncNavStatsLink();
+
+    if (route === "stats") {
+      if (state.answers.length === QUESTIONS.length) {
+        renderStats();
+      } else {
+        navigate(currentRoute(), true);
+      }
+      return;
+    }
+
+    if (window.PlayerMatchStats) {
+      window.PlayerMatchStats.stop();
+    }
+
     if (route === "home") {
       renderHome();
       return;
@@ -1145,6 +1201,13 @@
     if (action === "retake") {
       clearState();
       navigate("home");
+      return;
+    }
+
+    if (action === "stats") {
+      if (state.answers.length === QUESTIONS.length) {
+        navigate("stats");
+      }
       return;
     }
 
