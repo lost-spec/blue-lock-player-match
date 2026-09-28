@@ -1130,6 +1130,24 @@
     });
   }
 
+  function renderDossier() {
+    document.title = "Player Dossier | Player Match";
+    if (!window.PlayerMatchDossier) {
+      navigate("home", true);
+      return;
+    }
+
+    if (window.PlayerMatchStats) {
+      window.PlayerMatchStats.stop();
+    }
+
+    window.PlayerMatchDossier.start({
+      container: app,
+      imageBase: IMAGE_BASE,
+      reduceMotion,
+    });
+  }
+
   function render() {
     if (!app) {
       return;
@@ -1137,6 +1155,15 @@
 
     const route = routeFromLocation();
     syncNavStatsLink();
+
+    if (route === "dossier") {
+      renderDossier();
+      return;
+    }
+
+    if (window.PlayerMatchDossier) {
+      window.PlayerMatchDossier.stop();
+    }
 
     if (route === "stats") {
       if (state.answers.length === QUESTIONS.length) {
